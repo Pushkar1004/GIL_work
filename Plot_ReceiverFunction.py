@@ -69,7 +69,7 @@ class RFProfileData:
 
                 for j, rf in enumerate(self.data_dict["data"][i]):
                     # Normalize RF to zero mean and unit variance
-                    rf = (rf - np.mean(rf)) / np.std(rf)
+                    # rf = (rf - np.mean(rf)) / np.std(rf)
 
                     mag = self.data_dict["evmag"][i][j]
                     ev_la, ev_lo = self.data_dict["evloc"][i][j]
@@ -156,6 +156,7 @@ class RFProfileData:
         for bin_i, (key, bin_data) in enumerate(self.bins.items(), start=1):
             # Stack RFs in the bin
             bin_stacked = np.mean(bin_data, axis=0) if len(bin_data) >= 2 else bin_data[0]
+            bin_stacked = (bin_stacked - np.mean(bin_stacked) ) / np.std(bin_stacked)
 
             # Apply scaling and horizontal offset
             offset_rf = bin_stacked * scaling + bin_i * spacing
