@@ -2,40 +2,66 @@ import numpy as np
 import matplotlib.pyplot as plt
 from collections import defaultdict
 import seispy 
+import matplotlib.ticker as mticker
 
 class RFProfileData:
     """
     A class to bin, stack, and visualize receiver functions (RFs) along a profile.
-
+    
     Parameters
-    loaded_data : dict
-        {
-          "data": list of lists where each inner list contains receiver functions (numpy arrays) for one station,
-          "station": list of station names (i-th station corresponds to i-th list in "data"),
-          "evloc": list of lists of tuples (evlat, evlong); evloc[i][j] is location of j-th event for i-th station,
-          "evmag": list of lists of floats; magnitude of events, same structure as evloc,
-          "staloc": list of tuples (sta_lat, sta_long), one tuple for each station,
-          "snr": list of lists of signal-to-noise ratios, same structure as evmag
-        }
-        
-    profile_stations : list of str
-        Station names along the profile to be considered for binning/stacking/plotting.
-    shift : float
-        Time (s) before P-arrival.
-    time_after : float
-        Time (s) after P-arrival.
-    nsamples : int
-        Number of samples in each RF trace. All RFs must have equal length.
+    
+    data : list of lists of numpy.ndarray
+        Each inner list contains receiver functions (numpy arrays) for one station.
+    stations : list of str
+        Station names; i-th station corresponds to i-th list in "data".
+    evloc : list of lists of tuple(float, float)
+        Event locations (latitude, longitude); evloc[i][j] is the location of the j-th event for i-th station.
+    staloc : list of tuple(float, float)
+        Station locations (latitude, longitude); one tuple per station.
+    
+    Optional Parameters
+    
+    evmag : list of lists of float, default=None
+        Event magnitudes; same structure as evloc. If None, magnitude filtering is disabled.
+    snr : list of lists of float, default=None
+        Signal-to-noise ratios; same structure as evloc. If None, SNR filtering is disabled.
+    profile_stations : list of str, default=None
+        Subset of stations to include in profile. If None, all stations are included.
+    shift : float, default=None
+        Time (s) before P-arrival. If provided with `time_after`, defines the time axis as [-shift, time_after].
+    time_after : float, default=None
+        Time (s) after P-arrival. Used with `shift` to define time axis. If not provided, time axis is [0, nsamples].
+    nsamples : int, default=None
+        Number of samples in each RF trace. If None, inferred from data (len of first RF trace).
+        Note each rf should have same length. If not define the nsamples and stations that have same nsamples.
     """
-
-    def __init__(self, data_dict, profile_stations, shift, time_after, nsamples):
-        self.data_dict = data_dict
-        self.profile_stations = profile_stations
+    
+    def __init__(self, data, stations, evloc, staloc, shift = None, time_after= None, 
+                 nsamples = None, evmag = None, snr = None , profile_stations = None):
+        
+        self.data = data
+        self.stations = stations
+        self.evloc = evloc
+        self.staloc = staloc
         self.shift = shift
         self.time_after = time_after
+        self.nsamples = nsamples if nsamples is not None else len(self.data[0][0])
+        self.profile_stations = profile_stations if profile_stations is not None else stations
         self.bins = defaultdict(list)   # dict to hold binned RFs: key=(station, (epi_bin, baz_bin))
-        self.time = np.linspace(-self.shift, self.time_after, nsamples)  # common time axis
         self.sta_end = {}               # dict to hold last bin index for each station
+        
+        if shift is None:
+            shift = 0
+        if time_after is None:
+            time_after = self.nsamples
+        self.shift = shift
+        self.time_after = time_after
+        self.time = np.linspace(-self.shift, self.time_after, self.nsamples)
+
+        
+        # Optional args
+        self.evmag = evmag
+        self.snr = snr
 
     def _bin_and_stack(self, mag_thre=4.5, snr_thre=0.0,
                        epi_range=(30, 10, 100), baz_range=(0, 20, 360)):
@@ -54,7 +80,7 @@ class RFProfileData:
 
         Returns
         self.bins : dict
-            Dictionary with bin_info as key = (station, (epi_bin, baz_bin)), values = list of RFs in that bin.
+            Dictionary with bin_info as key = "station_(baz_bin)_(epi_bin)", values = list of RFs in that bin.
             This can be used for Redatuming 
         """
         epi_bins = np.arange(epi_range[0], epi_range[2] + epi_range[1], epi_range[1])
@@ -62,37 +88,58 @@ class RFProfileData:
         self.bins = defaultdict(list)
         self.sta_end = {}
 
-        for sta in self.profile_stations:
-            if sta in self.data_dict["station"]:
-                i = self.data_dict["station"].index(sta)
-                sta_la, sta_lo = self.data_dict["staloc"][i]
+        # create all keys(dtype string) across the stations in format station_baz_epi  
+        for sta in self.stations:
+            for baz in baz_bins:    
+                for epi in epi_bins:
+                    key = f"{sta}_{baz}_{epi}"
+                    self.bins[key] = []
 
-                for j, rf in enumerate(self.data_dict["data"][i]):
+        for sta in self.profile_stations:
+            if sta in self.stations:
+                i = self.stations.index(sta)
+                sta_la, sta_lo = self.staloc[i]
+
+                for j, rf in enumerate(self.data[i]):
                     # Normalize RF to zero mean and unit variance
                     # rf = (rf - np.mean(rf)) / np.std(rf)
-
-                    mag = self.data_dict["evmag"][i][j]
-                    ev_la, ev_lo = self.data_dict["evloc"][i][j]
+                    ev_la, ev_lo = self.evloc[i][j]
                     da = seispy.distaz(sta_la, sta_lo, ev_la, ev_lo)
                     dis, baz = da.delta, da.baz
-                    snr = self.data_dict["snr"][i][j]
+                    
+                    # Default values: +infinity so that if snr and mag does not exist we consider all data to plot    
+                    if self.snr is None:
+                        snr_val = np.inf
+                    else:
+                        snr_val = self.snr[i][j]
 
+                    if self.evmag is None:
+                        mag_val = np.inf
+                    else:
+                        mag_val = self.evmag[i][j]
+
+                        
                     # Apply thresholds
-                    if (mag < mag_thre or snr < snr_thre or
+                    if (mag_val < mag_thre or snr_val < snr_thre or
                         not (epi_range[0] < dis < epi_range[2]) or
                         not (baz_range[0] < baz < baz_range[2])):
                         continue
 
                     # Assign to bin
-                    epi_bin = np.digitize(dis, epi_bins) - 1
-                    baz_bin = np.digitize(baz, baz_bins) - 1
-                    bin_key = (epi_bin, baz_bin)
+                    epi_bin = epi_bins[np.digitize(dis, epi_bins) - 1]  
+                    baz_bin = baz_bins[np.digitize(baz, baz_bins) - 1]   
 
-                    self.bins[(sta, bin_key)].append(rf)
+                    # Construct key
+                    key = f"{sta}_{baz_bin}_{epi_bin}"
 
+                    self.bins[key].append(rf)
+
+        # Remove empty bins from the dictionary 
+        self.bins = {k: v for k, v in self.bins.items() if v} 
+        
         # Track where each station's bins end (for stacked plotting later)
         for i, key in enumerate(self.bins, start=0):
-            self.sta_end[key[0]] = i
+            self.sta_end[key.split("_")[0]] = i
         return self.bins 
 
     def _plot_all_stacked(self, scaling=1.0, spacing=5, figsize=(30, 20)):
@@ -110,9 +157,6 @@ class RFProfileData:
         for i, sta in enumerate(self.sta_end):
             # Concatenate RFs for this station across bins
             sta_data = list(self.bins.values())[pre_sta_end:self.sta_end[sta]]
-            if len(sta_data) == 0:
-                continue
-
             sta_data = np.vstack(sta_data)
             sta_stacked_data = np.mean(sta_data, axis=0) if len(sta_data) >= 2 else sta_data[0]
 
@@ -139,7 +183,7 @@ class RFProfileData:
         ax.set_title("Stacked Receiver Functions by Station")
         ax.set_yticks(yticks)
         ax.set_yticklabels(yticklabels)
-        ax.set_xticks(np.arange(-self.shift, self.time_after, 10))
+        ax.xaxis.set_major_locator(mticker.MaxNLocator(nbins=8))  
         ax.set_xlabel("Time (s)")
         ax.set_ylabel("Station")
         fig.tight_layout()
@@ -155,6 +199,8 @@ class RFProfileData:
 
         for bin_i, (key, bin_data) in enumerate(self.bins.items(), start=1):
             # Stack RFs in the bin
+            if not bin_data:   # empty list → skip
+                continue
             bin_stacked = np.mean(bin_data, axis=0) if len(bin_data) >= 2 else bin_data[0]
             bin_stacked = (bin_stacked - np.mean(bin_stacked) ) / np.std(bin_stacked)
 
@@ -174,7 +220,8 @@ class RFProfileData:
         ax.xaxis.set_ticks_position('top')
         ax.set_ylabel("Time (s)", fontsize=24)
         ax.set_xlabel("Station", fontsize=24)
-        ax.set_yticks(np.arange(-self.shift, self.time_after, 10))
+        # ax.set_yticks(np.arange(-self.shift, self.time_after, 10))
+        ax.yaxis.set_major_locator(mticker.MaxNLocator(nbins=8))
         ax.set_xticks([p * spacing for p in self.sta_end.values()])
         ax.set_xticklabels(self.sta_end.keys(), fontsize=24)
         ax.invert_yaxis()
